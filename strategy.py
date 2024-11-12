@@ -33,37 +33,43 @@ class ImbalanceAllocator:
         allocations = []
         
         for _, row in df.iterrows():
-            imbalance = row['imbalance']
+            imbalance = abs(row['imbalance'])  # Use absolute value for allocation magnitude
             rolling_sd = row['rolling_sd']
             
-            # Calculate allocation increment based on volatility
-            if rolling_sd > self.historical_sd * self.historical_sd_multiplier:
-                increment = 0.05  # 5% if volatility is high
-            else:
-                increment = 0.03  # 3% if volatility is normal
-
-            # Calculate allocation percentage based on imbalance
-            allocation_percentage = min(abs(imbalance) // increment * (1/20), 1)  # Cap allocation at 100%
+            # Determine threshold based on volatility
+            threshold = 0.05 if rolling_sd > self.historical_sd * self.historical_sd_multiplier else 0.03
+            
+            # Calculate allocation in fractions of 1/20
+            allocation_percentage = min((imbalance // threshold) * (1/20), 1)  # Cap at 100%
             allocations.append(allocation_percentage)
         
         return allocations
 
     def determine_position(self, df):
-        # Define position based on imbalance and allocation
+        # Define position based on the threshold and imbalance
         positions = []
         
         for _, row in df.iterrows():
-            if row['allocation'] > 0.0:  # Arbitrary threshold to take a position
-                if row['imbalance'] > 0:
-                    positions.append('long')
-                elif row['imbalance'] < 0:
-                    positions.append('short')
-                else:
-                    positions.append('nothing')
+            imbalance = row['imbalance']
+            rolling_sd = row['rolling_sd']
+            
+            # Determine the appropriate threshold
+            threshold = 0.05 if rolling_sd > self.historical_sd * self.historical_sd_multiplier else 0.03
+            
+            # Determine position based on imbalance and threshold
+            if imbalance > threshold:
+                positions.append('long')
+            elif imbalance < -threshold:
+                positions.append('short')
             else:
                 positions.append('nothing')
         
         return positions
+
+    def get_trend_change_rows(self, df):
+        # Identify rows where the position changes from the previous row
+        trend_change_rows = df[df['position'] != df['position'].shift()]
+        return trend_change_rows
 
     def run(self, data):
         # Calculate imbalance and rolling standard deviation
@@ -76,9 +82,13 @@ class ImbalanceAllocator:
         # Determine position based on allocation and imbalance
         data['position'] = self.determine_position(data)
         
+        # Get rows where a trend change occurs
+        trend_change_rows = self.get_trend_change_rows(data)
+        
         # Drop intermediate columns for cleaner output
         data.drop(['bid_volume', 'ask_volume', 'rolling_bid_volume', 'rolling_ask_volume'], axis=1, inplace=True)
-        return data[['timestamp', 'price', 'quantity', 'type', 'imbalance', 'rolling_sd', 'allocation', 'position']]
+        
+        return data[['timestamp', 'price', 'quantity', 'type', 'imbalance', 'rolling_sd', 'allocation', 'position']], trend_change_rows
 
 # Load the data
 df = pd.read_pickle('pickles/adausdt_20241112_104855.pkl')
@@ -87,7 +97,15 @@ print(f"Successfully loaded DataFrame with {len(df)} rows")
 
 # Instantiate and run the strategy
 allocator = ImbalanceAllocator(window_size=500)  # Example window size
-result_df = allocator.run(df)
+result_df, trend_change_rows = allocator.run(df)
 
-# Print the result
-print(result_df.head(10000))  # Display the first 10,000 rows of the resulting DataFrame
+# Print the last 100 rows of the result with trend changes
+pd.set_option('display.max_rows', 100)  # Control maximum rows displayed in a single print
+
+# Get mean imbalance
+mean_imbalance = result_df['imbalance'].mean()
+print(f"Mean imbalance: {mean_imbalance}")
+
+# Show trend change rows
+print("Trend change rows:")
+print(trend_change_rows)
