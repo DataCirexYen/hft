@@ -296,18 +296,23 @@ class DataProcessor:
             print(f"Error reading file {file_path}: {str(e)}")
             return None
     
-    def _save_as_pickle(self, df: pd.DataFrame, coin_name: str) -> None:
+    def _save_as_pickle(self, df: pd.DataFrame, coin_name: str, max_rows: int = 0) -> None:
         """
         Save DataFrame as a pickle file.
         
         Args:
             df (pd.DataFrame): DataFrame to save
             coin_name (str): Name of the coin for the filename
+            max_rows (int): Maximum number of rows to save. If 0, save all rows.
         """
         try:
             # Create a directory for pickles if it doesn't exist
             pickle_dir = "pickles"
             os.makedirs(pickle_dir, exist_ok=True)
+            
+            # Cut dataframe if max_rows specified
+            if max_rows > 0:
+                df = df.head(max_rows)
             
             # Generate filename with timestamp
             timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
