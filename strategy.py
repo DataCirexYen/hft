@@ -1,4 +1,7 @@
 import pandas as pd
+import numpy as np
+from numba import njit
+import hftbacktest as hbt
 
 class ImbalanceAllocator:
     def __init__(self, window_size, historical_sd_multiplier=1.2):
@@ -89,6 +92,89 @@ class ImbalanceAllocator:
         data.drop(['bid_volume', 'ask_volume', 'rolling_bid_volume', 'rolling_ask_volume'], axis=1, inplace=True)
         
         return data[['timestamp', 'price', 'quantity', 'type', 'imbalance', 'rolling_sd', 'allocation', 'position']], trend_change_rows
+
+@njit
+def market_making_algo(hbt):
+    asset_no = 0
+    tick_size = hbt.depth(asset_no).tick_size
+    lot_size = hbt.depth(asset_no).lot_size
+    
+    # Initialize ImbalanceAllocator parameters
+    window_size = 500
+    historical_sd_multiplier = 1.2
+    
+    # Arrays to store rolling calculations
+    bid_volumes = np.zeros(window_size)
+    ask_volumes = np.zeros(window_size)
+    imbalances = np.zeros(window_size)
+    current_idx = 0
+
+    while hbt.elapse(10_000_000) == 0:
+        hbt.clear_inactive_orders(asset_no)
+        
+        # Update rolling volumes
+        depth = hbt.depth(asset_no)
+        bid_volumes[current_idx] = depth.bid_volume
+        ask_volumes[current_idx] = depth.ask_volume
+        
+        # Calculate imbalance
+        rolling_bid_sum = np.sum(bid_volumes)
+        rolling_ask_sum = np.sum(ask_volumes)
+        current_imbalance = (rolling_bid_sum - rolling_ask_sum) / (rolling_bid_sum + rolling_ask_sum)
+        imbalances[current_idx] = current_imbalance
+        
+        # Calculate rolling standard deviation
+        rolling_sd = np.std(imbalances)
+        historical_sd = np.std(imbalances[:max(1, current_idx)])
+        
+        # Determine threshold based on volatility
+        threshold = 0.05 if rolling_sd > historical_sd * historical_sd_multiplier else 0.03
+        
+        # Adjust market making parameters based on imbalance
+        a = 1.0  # Base alpha
+        b = 1.0  # Base risk factor
+        c = 1.0  # Base volatility factor
+        hs = 1.0  # Base half spread
+
+        # Modify parameters based on imbalance
+        if abs(current_imbalance) > threshold:
+            # Increase spread and risk sensitivity when imbalance is high
+            hs *= (1 + abs(current_imbalance))
+            b *= (1 + abs(current_imbalance))
+            
+            # Adjust alpha based on imbalance direction
+            if current_imbalance > 0:
+                a *= 1.2  # More aggressive on buys
+            else:
+                a *= 0.8  # More conservative on sells
+
+        # Rest of the market making logic
+        position = hbt.position(asset_no)
+        volatility = rolling_sd
+        risk = (c + volatility) * position
+        half_spread = (c + volatility) * hs
+
+        max_notional_position = 1000
+        notional_qty = 100
+
+        mid_price = (depth.best_bid + depth.best_ask) / 2.0
+        
+        # Adjust reservation price based on imbalance signals
+        forecast = current_imbalance  # Use imbalance as alpha signal
+        reservation_price = mid_price + a * forecast - b * risk
+        new_bid = reservation_price - half_spread
+        new_ask = reservation_price + half_spread
+
+        # ... (rest of the original market making code remains the same) ...
+
+        current_idx = (current_idx + 1) % window_size
+
+    return True
+
+# Example usage
+if __name__ == "__main__":
+    # Initialize your backtest environment
+    market_making_algo(hbt)
 
 # Load the data
 df = pd.read_pickle('pickles/adausdt_20241112_104855.pkl')

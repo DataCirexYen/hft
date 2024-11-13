@@ -1,3 +1,6 @@
 downloads/
 env/
 pickles/
+data/
+stats/
+backup/
