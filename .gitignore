@@ -1,6 +1,6 @@
-downloads/
-env/
-pickles/
-data/
-stats/
-backup/
+downloads
+env
+pickles
+data
+stats
+backup
