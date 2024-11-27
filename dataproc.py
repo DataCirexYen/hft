@@ -29,25 +29,21 @@ def analyze_and_recommend_params(input_files):
         print(f"Inspecting {file_path}:")
         data = np.load(file_path)['data']
         
-        # Check structure
         print(f"Data shape: {data.shape}")
-        print(f"Data type: {data.dtype}")
+        print(f"Data dtype: {data.dtype}")
         print("Sample rows:")
-        print(data[:5])  # Print the first 5 rows for inspection
+        print(data[:5])
 
-        # Collect price and quantity data
         prices = data['px']
         quantities = data['qty']
         
         all_prices.extend(prices)
         all_quantities.extend(quantities)
 
-        # Explore individual file ranges
         print(f"Price range in {file_path}: min={prices.min()}, max={prices.max()}, std={prices.std()}")
         print(f"Quantity range in {file_path}: min={quantities.min()}, max={quantities.max()}, std={quantities.std()}")
         print("-" * 50)
 
-    # Aggregate all file data
     all_prices = np.array(all_prices)
     all_quantities = np.array(all_quantities)
 
@@ -55,9 +51,8 @@ def analyze_and_recommend_params(input_files):
     print(f"Overall price range: min={all_prices.min()}, max={all_prices.max()}, std={all_prices.std()}")
     print(f"Overall quantity range: min={all_quantities.min()}, max={all_quantities.max()}, std={all_quantities.std()}")
 
-    # Recommend tick_size and lot_size
-    tick_size = all_prices.std() / 10  # Example: Use a fraction of std
-    lot_size = all_quantities.std() / 10  # Example: Use a fraction of std
+    tick_size = all_prices.std() / 10
+    lot_size = all_quantities.std() / 10
 
     print("\nRecommended Parameters:")
     print(f"tick_size: {tick_size}")
@@ -97,9 +92,15 @@ def create_market_snapshot(input_files, tick_size, lot_size, output_snapshot_fil
     """
     print("Creating market snapshot...")
     print("Input files:", input_files)
+    
     for input_file in input_files:
-        npz_data = np.load(input_file)
-        print(f"{input_file}: shape={npz_data['data'].shape}")
+        data = np.load(input_file)['data']
+        print(f"{input_file}:")
+        print(f"Shape: {data.shape}")
+        print(f"dtype: {data.dtype}")
+        print("Sample data:")
+        print(data[:3])
+        print("-" * 50)
 
     print("Tick size:", tick_size)
     print("Lot size:", lot_size)
@@ -111,10 +112,14 @@ def create_market_snapshot(input_files, tick_size, lot_size, output_snapshot_fil
         output_snapshot_filename=output_snapshot_file,
         initial_snapshot=initial_snapshot_file,
     )
+    
     if output_snapshot_file:
         snapshot_data = np.load(output_snapshot_file)['data']
         print(f"Snapshot saved to {output_snapshot_file}")
-        print(f"Snapshot file shape: {snapshot_data.shape}")
+        print(f"Snapshot dtype: {snapshot_data.dtype}")
+        print(f"Snapshot shape: {snapshot_data.shape}")
+        print("Sample snapshot data:")
+        print(snapshot_data[:3])
 
 
 def convert_tardis_data(trade_file, book_file, output_file=None, buffer_size=200_000_000):
@@ -170,35 +175,39 @@ def generate_order_latency_nb(data, order_latency, mul_entry, offset_entry, mul_
 def generate_order_latency(feed_file, output_file=None, mul_entry=1, offset_entry=0, mul_resp=1, offset_resp=0):
     print("Loading feed file:", feed_file)
 
-    # Load the feed file
+    # Load the feed file and preserve the structured dtype
     data = np.load(feed_file)['data']
-    df = pl.DataFrame(data)
+    
+    # Filter rows based on specific `ev` values directly using numpy
+    mask = np.isin(data['ev'], [3758096385, 3489660929])
+    filtered_data = data[mask]
+    print("Filtered Data Shape:", filtered_data.shape)
 
-    # Filter rows based on specific `ev` values (adjust as needed)
-    valid_events = [3758096385, 3489660929]  # Add all relevant values here
-    df = df.filter(pl.col('ev').is_in(valid_events))
-    print("Filtered Data Shape:", df.shape)
-
-    if df.shape[0] == 0:
+    if filtered_data.shape[0] == 0:
         print("No valid data found after filtering. Exiting latency generation.")
         return None
 
-    # Continue processing
-    df = df.with_columns(
-        pl.col('local_ts').alias('ts')
-    ).group_by_dynamic(
-        'ts', every='1000000000i'
-    ).agg(
-        pl.col('exch_ts').last(),
-        pl.col('local_ts').last()
-    ).drop('ts')
+    # Group by timestamp (every second) using numpy operations
+    timestamps = filtered_data['local_ts']
+    bins = timestamps // 1_000_000_000  # Convert to seconds
+    unique_bins = np.unique(bins)
+    
+    # Get last row for each second
+    grouped_data = np.zeros(len(unique_bins), 
+                          dtype=[('exch_ts', '<i8'), ('local_ts', '<i8')])
+    
+    for i, bin_val in enumerate(unique_bins):
+        mask = bins == bin_val
+        bin_data = filtered_data[mask]
+        grouped_data[i]['exch_ts'] = bin_data['exch_ts'][-1]
+        grouped_data[i]['local_ts'] = bin_data['local_ts'][-1]
 
-    # Convert to a structured array
-    data = df.to_numpy(structured=True)
-    order_latency = np.zeros(len(data), dtype=[('req_ts', 'i8'), ('exch_ts', 'i8'), ('resp_ts', 'i8')])
+    # Create output array
+    order_latency = np.zeros(len(grouped_data), 
+                           dtype=[('req_ts', 'i8'), ('exch_ts', 'i8'), ('resp_ts', 'i8')])
 
     # Generate latency data
-    generate_order_latency_nb(data, order_latency, mul_entry, offset_entry, mul_resp, offset_resp)
+    generate_order_latency_nb(grouped_data, order_latency, mul_entry, offset_entry, mul_resp, offset_resp)
 
     if output_file is not None:
         np.savez_compressed(output_file, data=order_latency)

@@ -1,125 +1,125 @@
 import numpy as np
-from numba import njit
 import polars as pl
+from numba import njit
 from hftbacktest import BacktestAsset, HashMapMarketDepthBacktest, BUY, SELL, GTX, LIMIT
-
 
 @njit
 def market_making_algo(hbt):
     asset_no = 0
-    tick_size = hbt.depth(asset_no).tick_size
-    lot_size = hbt.depth(asset_no).lot_size
-
-    # in nanoseconds
-    while hbt.elapse(10_000_000) == 0:
-        hbt.clear_inactive_orders(asset_no)
-        a = 1
-        b = 1
-        c = 1
-        hs = 1
-
-        # Alpha, it can be a combination of several indicators.
-        forecast = 0
-        # In HFT, it can be various measurements of short-term market movements,
-        # such as the high-low range in the last X minutes.
-        volatility = 0
-        # Delta risk, it can be a combination of several risks.
-        position = hbt.position(asset_no)
-        risk = (c + volatility) * position
-        half_spread = (c + volatility) * hs
-
-        max_notional_position = 1000
-        notional_qty = 100
-
+    
+    # Main simulation loop
+    while True:
+        # Elapse time, returns 0 if successful
+        if hbt.elapse(10_000_000) != 0:
+            break
+        
+        # Get market depth
         depth = hbt.depth(asset_no)
-
+        
+        # Check if market data is valid
+        if depth.best_bid <= 0 or depth.best_ask <= 0:
+            continue
+        
+        # Calculate mid price
         mid_price = (depth.best_bid + depth.best_ask) / 2.0
-
-        # fair value pricing = mid_price + a * forecast
-        #                      or underlying(correlated asset) + adjustment(basis + cost + etc) + a * forecast
-        # risk skewing = -b * risk
-        reservation_price = mid_price + a * forecast - b * risk
-        new_bid = reservation_price - half_spread
-        new_ask = reservation_price + half_spread
-        print(f"tick_size: {tick_size}, lot_size: {lot_size}, mid_price: {mid_price}")
-        print(f"best_bid: {depth.best_bid}, best_ask: {depth.best_ask}")
-
-        new_bid_tick = min(np.round(new_bid / tick_size), depth.best_bid_tick)
-        new_ask_tick = max(np.round(new_ask / tick_size), depth.best_ask_tick)
-
-        order_qty = np.round(notional_qty / mid_price / lot_size) * lot_size
-
-        # Elapses a process time.
-        if not hbt.elapse(1_000_000) != 0:
-            return False
-
-        last_order_id = -1
-        update_bid = True
-        update_ask = True
-        buy_limit_exceeded = position * mid_price > max_notional_position
-        sell_limit_exceeded = position * mid_price < -max_notional_position
-        orders = hbt.orders(asset_no)
-        order_values = orders.values()
-        while order_values.has_next():
-            order = order_values.get()
-            if order.side == BUY:
-                if order.price_tick == new_bid_tick or buy_limit_exceeded:
-                    update_bid = False
-                if order.cancellable and (update_bid or buy_limit_exceeded):
-                    hbt.cancel(asset_no, order.order_id, False)
-                    last_order_id = order.order_id
-            elif order.side == SELL:
-                if order.price_tick == new_ask_tick or sell_limit_exceeded:
-                    update_ask = False
-                if order.cancellable and (update_ask or sell_limit_exceeded):
-                    hbt.cancel(asset_no, order.order_id, False)
-                    last_order_id = order.order_id
-
-        # It can be combined with a grid trading strategy by submitting multiple orders to capture better spreads and
-        # have queue position.
-        # This approach requires more sophisticated logic to efficiently manage resting orders in the order book.
-        if update_bid:
-            # There is only one order at a given price, with new_bid_tick used as the order ID.
-            order_id = new_bid_tick
-            hbt.submit_buy_order(asset_no, order_id, new_bid_tick * tick_size, order_qty, GTX, LIMIT, False)
-            last_order_id = order_id
-        if update_ask:
-            # There is only one order at a given price, with new_ask_tick used as the order ID.
-            order_id = new_ask_tick
-            hbt.submit_sell_order(asset_no, order_id, new_ask_tick * tick_size, order_qty, GTX, LIMIT, False)
-            last_order_id = order_id
-
-        # All order requests are considered to be requested at the same time.
-        # Waits until one of the order responses is received.
-        if last_order_id >= 0:
-            # Waits for the order response for a maximum of 5 seconds.
-            timeout = 5_000_000_000
-            if not hbt.wait_order_response(asset_no, last_order_id, timeout):
-                return False
-
+        
+        # Basic market-making parameters
+        tick_size = depth.tick_size
+        lot_size = depth.lot_size
+        
+        # Current position
+        position = hbt.position(asset_no)
+        
+        # Define spread and order size
+        half_spread = 0.0001  # 1 basis point spread
+        order_qty = lot_size  # Use full lot size
+        
+        # Calculate bid and ask prices
+        bid_price = mid_price - half_spread
+        ask_price = mid_price + half_spread
+        
+        # Convert prices to ticks
+        bid_tick = int(bid_price / tick_size)
+        ask_tick = int(ask_price / tick_size)
+        
+        # Clear existing orders
+        hbt.clear_inactive_orders(asset_no)
+        
+        # Submit new orders
+        # Buy order
+        buy_order_id = bid_tick
+        hbt.submit_buy_order(
+            asset_no, 
+            buy_order_id, 
+            bid_tick * tick_size, 
+            order_qty, 
+            GTX,  # Good-til-cancel 
+            LIMIT,  # Limit order
+            False  # Not a post-only order
+        )
+        
+        # Sell order
+        sell_order_id = ask_tick
+        hbt.submit_sell_order(
+            asset_no, 
+            sell_order_id, 
+            ask_tick * tick_size, 
+            order_qty, 
+            GTX, 
+            LIMIT, 
+            False
+        )
+        
+        # Wait for order responses
+        timeout = 5_000_000_000  # 5 seconds in nanoseconds
+        if not (hbt.wait_order_response(asset_no, buy_order_id, timeout) and 
+                hbt.wait_order_response(asset_no, sell_order_id, timeout)):
+            break
+    
     return True
 
-
-if __name__ == '__main__':
-    # This backtest assumes market maker rebates.
-    # https://www.binance.com/en/support/announcement/binance-upgrades-usd%E2%93%A2-margined-futures-liquidity-provider-program-2023-04-04-01007356e6514df3811b0c80ab8c83bf
+def run_backtest():
+    # Backtest configuration
     symbol = "1000bonkusdt"
     date = "20240730"
-    data = np.load(f'usdm/{symbol}_{date}.npz')
-
-    df = pl.DataFrame(data)
-    print(df)
-    asset = (
-        BacktestAsset()
+    
+    try:
+        # Load market data
+        market_data = np.load(f'usdm/{symbol}_{date}.npz')['data']
+        
+        # Convert to Polars DataFrame for initial inspection
+        df = pl.DataFrame(market_data)
+        print("Market Data Overview:")
+        print(df.head())
+        
+        # Create BacktestAsset with detailed configuration
+        asset = (
+            BacktestAsset()
             .data([f'usdm/{symbol}_{date}.npz'])
             .initial_snapshot(f'usdm/{symbol}_{date}_eod.npz')
-            .linear_asset(1.0)
-            .intp_order_latency(np.load(f'usdm/feed_latency_{symbol}_{date}.npz')['data'])
-            .power_prob_queue_model(2.0)
-            .no_partial_fill_exchange()
-            .trading_value_fee_model(-0.00005, 0.0007)
-            .tick_size(0.13)
-            .lot_size(9000)
-    )
-    hbt = HashMapMarketDepthBacktest([asset])
-    market_making_algo(hbt)
+            .linear_asset(1.0)  # Linear asset type
+            .intp_order_latency(
+                np.load(f'usdm/feed_latency_{symbol}_{date}.npz')['data']
+            )
+            .power_prob_queue_model(2.0)  # Queue model 
+            .no_partial_fill_exchange()  # Exchange fill model
+            .trading_value_fee_model(-0.00005, 0.0007)  # Fee model
+            .tick_size(0.00001)  # Minimum price movement
+            .lot_size(1)  # Minimum trade quantity
+        )
+        
+        # Create backtest environment
+        hbt = HashMapMarketDepthBacktest([asset])
+        
+        # Run market-making algorithm
+        result = market_making_algo(hbt)
+        
+        print(f"Backtest Completed. Result: {result}")
+        
+    except Exception as e:
+        import traceback
+        print(f"Backtest Error: {e}")
+        traceback.print_exc()
+
+if __name__ == '__main__':
+    run_backtest()
