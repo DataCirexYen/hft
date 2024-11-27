@@ -16,6 +16,43 @@ from hftbacktest import (
 )
 from hftbacktest.stats import LinearAssetRecord
 
+
+def check_data(
+    data_file='usdm/1000bonkusdt_20240730.npz',
+    snapshot_file='usdm/1000bonkusdt_20240730_eod.npz', 
+    latency_file='usdm/feed_latency_1000bonkusdt_20240730.npz'
+):
+    # Check the data file
+    print(f"\nChecking {data_file}:")
+    try:
+        data = np.load(data_file)
+        print("Arrays in the file:", data.files)
+        for arr_name in data.files:
+            print(f"{arr_name} shape:", data[arr_name].shape)
+    except Exception as e:
+        print(f"Error loading {data_file}:", e)
+
+    # Check the EOD snapshot file
+    print(f"\nChecking {snapshot_file}:")
+    try:
+        snapshot = np.load(snapshot_file)
+        print("Arrays in the file:", snapshot.files)
+        for arr_name in snapshot.files:
+            print(f"{arr_name} shape:", snapshot[arr_name].shape)
+    except Exception as e:
+        print(f"Error loading {snapshot_file}:", e)
+
+    # Check the latency file
+    print(f"\nChecking {latency_file}:")
+    try:
+        latency = np.load(latency_file)
+        print("Arrays in the file:", latency.files)
+        for arr_name in latency.files:
+            print(f"{arr_name} shape:", latency[arr_name].shape)
+    except Exception as e:
+        print(f"Error loading {latency_file}:", e)
+
+
 @njit
 def obi_mm(
     hbt,
@@ -145,207 +182,75 @@ def obi_mm(
         stat.record(hbt)
 
 
-roi_lb = 10000
-roi_ub = 50000
+if __name__ == '__main__':
+    # Strategy parameters
+    check_data()
+    input("Press Enter to continue...")
+    symbol = "1000bonkusdt"
+    date = "20240730"
+    
+    # Market making parameters
+    half_spread = 10
+    skew = 2
+    c1 = 20
+    depth = 0.001  # 0.1% from the mid price
+    interval = 500_000_000  # 500ms
+    window = 600_000_000_000 / interval  # 10min
+    order_qty_dollar = 25_000
+    max_position_dollar = order_qty_dollar * 20
+    grid_num = 1
+    roi_lb = 10000
+    roi_ub = 50000
 
-latency_data = np.concatenate(
-[np.load('latency/live_order_latency_{}.npz'.format(date))['data'] for date in range(20230501, 20230532)]
-)
+    # Load latency data
+    latency_data = np.load(f'usdm/feed_latency_{symbol}_{date}.npz')['data']
 
-asset = (
-    BacktestAsset()
-        .data(['data2/btcusdt_{}.npz'.format(date) for date in range(20230501, 20230532)])
-        .initial_snapshot('data2/btcusdt_20230430_eod.npz')
-        .linear_asset(1.0) 
-        .intp_order_latency(latency_data)
-        .power_prob_queue_model(2)
-        .no_partial_fill_exchange()
-        .trading_value_fee_model(-0.00005, 0.0007)
-        .tick_size(0.1)
-        .lot_size(0.001)
-        .roi_lb(roi_lb)    
-        .roi_ub(roi_ub)
-)
+    asset = (
+        BacktestAsset()
+            .data([f'usdm/{symbol}_{date}.npz'])
+            .initial_snapshot(f'usdm/{symbol}_{date}_eod.npz')
+            .linear_asset(1.0) 
+            .intp_order_latency(latency_data)
+            .power_prob_queue_model(2)
+            .no_partial_fill_exchange()
+            .trading_value_fee_model(-0.00005, 0.0007)
+            .tick_size(0.1)
+            .lot_size(0.001)
+            .roi_lb(roi_lb)    
+            .roi_ub(roi_ub)
+    )
 
-hbt = ROIVectorMarketDepthBacktest([asset])
+    hbt = ROIVectorMarketDepthBacktest([asset])
+    recorder = Recorder(1, 30_000_000)
+    grid_interval = hbt.depth(0).tick_size
 
-recorder = Recorder(1, 30_000_000)
+    obi_mm(
+        hbt,
+        recorder.recorder,
+        half_spread,
+        skew,
+        c1,
+        depth,
+        interval,
+        window,
+        order_qty_dollar,
+        max_position_dollar,
+        grid_num,
+        grid_interval,
+        roi_lb,
+        roi_ub
+    )
 
-half_spread = 80
-skew = 3.5
-c1 = 160
-depth = 0.025 # 2.5% from the mid price
-interval = 1_000_000_000 # 1s
-window = 3_600_000_000_000 / interval # 1hour
-order_qty_dollar = 50_000
-max_position_dollar = order_qty_dollar * 50
-grid_num = 1
-grid_interval = hbt.depth(0).tick_size
+    # Save and analyze results
+    output_file = f'stats/obi_{symbol}_{date}.npz'
+    recorder.to_npz(output_file)
 
-obi_mm(
-    hbt,
-    recorder.recorder,
-    half_spread,
-    skew,
-    c1,
-    depth,
-    interval,
-    window,
-    order_qty_dollar,
-    max_position_dollar,
-    grid_num,
-    grid_interval,
-    roi_lb,
-    roi_ub
-)
-
-hbt.close()
-
-recorder.to_npz('stats/obi_btcusdt.npz')
-
-data = np.load('stats/obi_btcusdt.npz')['0']
-stats = (
-    LinearAssetRecord(data)
-        .resample('5m')
-        .stats(book_size=2_500_000)
-)
-stats.summary()
-
-stats.plot()
-
-###%%time
-
-roi_lb = 0
-roi_ub = 3000
-
-latency_data = np.concatenate(
-[np.load('latency/live_order_latency_{}.npz'.format(date))['data'] for date in range(20230501, 20230532)]
-)
-
-asset = (
-    BacktestAsset()
-        .data(['data2/ethusdt_{}.npz'.format(date) for date in range(20230501, 20230532)])
-        .initial_snapshot('data2/ethusdt_20230430_eod.npz')
-        .linear_asset(1.0) 
-        .intp_order_latency(latency_data)
-        .power_prob_queue_model(2)
-        .no_partial_fill_exchange()
-        .trading_value_fee_model(-0.00005, 0.0007)
-        .tick_size(0.01)
-        .lot_size(0.001)
-        .roi_lb(roi_lb)    
-        .roi_ub(roi_ub)
-)
-
-hbt = ROIVectorMarketDepthBacktest([asset])
-
-recorder = Recorder(1, 30_000_000)
-
-half_spread = 5
-skew = 0.2
-c1 = 10
-depth = 0.025 # 2.5% from the mid price
-interval = 1_000_000_000 # 1s
-window = 3_600_000_000_000 / interval # 1hour
-order_qty_dollar = 50_000
-max_position_dollar = order_qty_dollar * 50
-grid_num = 1
-grid_interval = hbt.depth(0).tick_size
-
-obi_mm(
-    hbt,
-    recorder.recorder,
-    half_spread,
-    skew,
-    c1,
-    depth,
-    interval,
-    window,
-    order_qty_dollar,
-    max_position_dollar,
-    grid_num,
-    grid_interval,
-    roi_lb,
-    roi_ub
-)
-
-hbt.close()
-
-recorder.to_npz('stats/obi_ethusdt.npz')
-
-data = np.load('stats/obi_ethusdt.npz')['0']
-stats = (
-    LinearAssetRecord(data)
-        .resample('5m')
-        .stats(book_size=2_500_000)
-)
-stats.summary()
-
-stats.plot()
-
-roi_lb = 10000
-roi_ub = 50000
-
-latency_data = np.concatenate(
-[np.load('latency/live_order_latency_{}.npz'.format(date))['data'] for date in range(20230501, 20230532)]
-)
-
-asset = (
-    BacktestAsset()
-        .data(['data2/btcusdt_{}.npz'.format(date) for date in range(20230501, 20230532)])
-        .initial_snapshot('data2/btcusdt_20230430_eod.npz')
-        .linear_asset(1.0) 
-        .intp_order_latency(latency_data)
-        .power_prob_queue_model(2)
-        .no_partial_fill_exchange()
-        .trading_value_fee_model(-0.00005, 0.0007)
-        .tick_size(0.1)
-        .lot_size(0.001)
-        .roi_lb(roi_lb)    
-        .roi_ub(roi_ub)
-)
-
-hbt = ROIVectorMarketDepthBacktest([asset])
-
-recorder = Recorder(1, 30_000_000)
-
-half_spread = 10
-skew = 2
-c1 = 20
-depth = 0.001 # 0.1% from the mid price
-interval = 500_000_000 # 500ms
-window = 600_000_000_000 / interval # 10min
-order_qty_dollar = 25_000
-max_position_dollar = order_qty_dollar * 20
-grid_num = 1
-grid_interval = hbt.depth(0).tick_size
-
-obi_mm(
-    hbt,
-    recorder.recorder,
-    half_spread,
-    skew,
-    c1,
-    depth,
-    interval,
-    window,
-    order_qty_dollar,
-    max_position_dollar,
-    grid_num,
-    grid_interval,
-    roi_lb,
-    roi_ub
-)
-
-recorder.to_npz('stats/obi_vg_btcusdt.npz')
-
-data = np.load('stats/obi_vg_btcusdt.npz')['0']
-stats = (
-    LinearAssetRecord(data)
-        .resample('5m')
-        .stats()
-)
-stats.summary()
-
-stats.plot()
+    data = np.load(output_file)['0']
+    stats = (
+        LinearAssetRecord(data)
+            .resample('5m')
+            .stats()
+    )
+    stats.summary()
+    stats.plot()
 

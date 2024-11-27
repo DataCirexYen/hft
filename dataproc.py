@@ -1,5 +1,6 @@
 # Import necessary libraries
 import polars as pl
+import gzip
 from numba import njit
 import numpy as np
 import time
@@ -99,34 +100,24 @@ def generate_order_latency_nb(data, order_latency, mul_entry, offset_entry, mul_
         order_latency['req_ts'][i] = req_ts
         order_latency['exch_ts'][i] = order_exch_ts
         order_latency['resp_ts'][i] = resp_ts
-
 def generate_order_latency(feed_file, output_file=None, mul_entry=1, offset_entry=0, mul_resp=1, offset_resp=0):
+    print("Loading feed file:", feed_file)
 
-    EXCH_EVENT = 1
-    LOCAL_EVENT = 2
-
-    """
-    Generate order latency data from feed data.
-
-    Args:
-        feed_file: Path to the feed data file.
-        output_file: Path to save the generated latency data.
-        mul_entry: Multiplier for entry latency.
-        offset_entry: Offset for entry latency.
-        mul_resp: Multiplier for response latency.
-        offset_resp: Offset for response latency.
-
-    Returns:
-        Numpy array of latency data.
-    """
-    print("Generating order latency data...")
+    # Load the feed file
     data = np.load(feed_file)['data']
     df = pl.DataFrame(data)
 
-    df = df.filter(
-        (pl.col('ev') & EXCH_EVENT == EXCH_EVENT) & 
-        (pl.col('ev') & LOCAL_EVENT == LOCAL_EVENT)
-    ).with_columns(
+    # Filter rows based on specific `ev` values (adjust as needed)
+    valid_events = [3758096385, 3489660929]  # Add all relevant values here
+    df = df.filter(pl.col('ev').is_in(valid_events))
+    print("Filtered Data Shape:", df.shape)
+
+    if df.shape[0] == 0:
+        print("No valid data found after filtering. Exiting latency generation.")
+        return None
+
+    # Continue processing
+    df = df.with_columns(
         pl.col('local_ts').alias('ts')
     ).group_by_dynamic(
         'ts', every='1000000000i'
@@ -135,9 +126,11 @@ def generate_order_latency(feed_file, output_file=None, mul_entry=1, offset_entr
         pl.col('local_ts').last()
     ).drop('ts')
 
+    # Convert to a structured array
     data = df.to_numpy(structured=True)
     order_latency = np.zeros(len(data), dtype=[('req_ts', 'i8'), ('exch_ts', 'i8'), ('resp_ts', 'i8')])
 
+    # Generate latency data
     generate_order_latency_nb(data, order_latency, mul_entry, offset_entry, mul_resp, offset_resp)
 
     if output_file is not None:
@@ -145,7 +138,6 @@ def generate_order_latency(feed_file, output_file=None, mul_entry=1, offset_entr
         print(f"Order latency data saved to {output_file}")
 
     return order_latency
-
 
 def process_latency_data(feed_file, latency_output_file):
     """
@@ -176,10 +168,10 @@ if __name__ == "__main__":
         input_files=[f"usdm/{name}.npz"],
         tick_size=0.1,
         lot_size=0.001,
-        output_snapshot_file=f"usdm/{name}.npz_eod.npz",
+        output_snapshot_file=f"usdm/{name}_eod.npz",
     )
-    time.sleep(1)
-    process_latency_data(
-        feed_file=f"usdm/{name}.npz",
-        latency_output_file=f"usdm/feed_latency_{name}.npz"
-    )
+
+process_latency_data(
+    feed_file=f"usdm/{name}.npz",
+    latency_output_file=f"usdm/feed_latency_{name}.npz"
+)
