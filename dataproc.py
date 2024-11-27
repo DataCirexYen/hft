@@ -9,6 +9,63 @@ from hftbacktest.data.utils import tardis
 from hftbacktest.data.utils.binancefutures import convert as binance_convert
 
 
+
+def analyze_and_recommend_params(input_files):
+    """
+    Analyze .npz input files to recommend tick_size and lot_size for market snapshot.
+
+    Args:
+        input_files (list): List of input .npz files.
+
+    Returns:
+        dict: Recommendations for `tick_size` and `lot_size`.
+    """
+    print("Analyzing input files for parameter recommendations...\n")
+
+    all_prices = []
+    all_quantities = []
+
+    for file_path in input_files:
+        print(f"Inspecting {file_path}:")
+        data = np.load(file_path)['data']
+        
+        # Check structure
+        print(f"Data shape: {data.shape}")
+        print(f"Data type: {data.dtype}")
+        print("Sample rows:")
+        print(data[:5])  # Print the first 5 rows for inspection
+
+        # Collect price and quantity data
+        prices = data['px']
+        quantities = data['qty']
+        
+        all_prices.extend(prices)
+        all_quantities.extend(quantities)
+
+        # Explore individual file ranges
+        print(f"Price range in {file_path}: min={prices.min()}, max={prices.max()}, std={prices.std()}")
+        print(f"Quantity range in {file_path}: min={quantities.min()}, max={quantities.max()}, std={quantities.std()}")
+        print("-" * 50)
+
+    # Aggregate all file data
+    all_prices = np.array(all_prices)
+    all_quantities = np.array(all_quantities)
+
+    print("\nAggregated Data Analysis Across All Files:")
+    print(f"Overall price range: min={all_prices.min()}, max={all_prices.max()}, std={all_prices.std()}")
+    print(f"Overall quantity range: min={all_quantities.min()}, max={all_quantities.max()}, std={all_quantities.std()}")
+
+    # Recommend tick_size and lot_size
+    tick_size = all_prices.std() / 10  # Example: Use a fraction of std
+    lot_size = all_quantities.std() / 10  # Example: Use a fraction of std
+
+    print("\nRecommended Parameters:")
+    print(f"tick_size: {tick_size}")
+    print(f"lot_size: {lot_size}")
+
+    return {"tick_size": tick_size, "lot_size": lot_size}
+
+
 def convert_binance_data(input_file, output_file, combined_stream=True):
     """
     Converts Binance futures data.
@@ -39,6 +96,14 @@ def create_market_snapshot(input_files, tick_size, lot_size, output_snapshot_fil
         initial_snapshot_file (str): Initial snapshot for reference (optional).
     """
     print("Creating market snapshot...")
+    print("Input files:", input_files)
+    for input_file in input_files:
+        npz_data = np.load(input_file)
+        print(f"{input_file}: shape={npz_data['data'].shape}")
+
+    print("Tick size:", tick_size)
+    print("Lot size:", lot_size)
+
     create_last_snapshot(
         input_files,
         tick_size=tick_size,
@@ -47,7 +112,9 @@ def create_market_snapshot(input_files, tick_size, lot_size, output_snapshot_fil
         initial_snapshot=initial_snapshot_file,
     )
     if output_snapshot_file:
+        snapshot_data = np.load(output_snapshot_file)['data']
         print(f"Snapshot saved to {output_snapshot_file}")
+        print(f"Snapshot file shape: {snapshot_data.shape}")
 
 
 def convert_tardis_data(trade_file, book_file, output_file=None, buffer_size=200_000_000):
@@ -162,12 +229,12 @@ if __name__ == "__main__":
         input_file=f"usdm/{name}.gz",
         output_file=f"usdm/{name}.npz",
     )
-
+    best_params = analyze_and_recommend_params([f"usdm/{name}.npz"])
     # Create market snapshot using the converted file
     create_market_snapshot(
         input_files=[f"usdm/{name}.npz"],
-        tick_size=0.1,
-        lot_size=0.001,
+        tick_size=best_params["tick_size"],
+        lot_size=best_params["lot_size"],
         output_snapshot_file=f"usdm/{name}_eod.npz",
     )
 
