@@ -68,18 +68,20 @@ def convert_tardis_data(trade_file, book_file, output_file=None, buffer_size=200
 
 
 if __name__ == "__main__":
-    # Example usage of the functions
     # Convert Binance data
+    input_file = "usdm/1000bonkusdt_20240730.gz"
+    converted_file = "usdm/1000bonkusdt_20240730.npz"
+    
     convert_binance_data(
-        input_file="usdm/btcusdt_20240808.gz",
-        output_file="usdm/btcusdt_20240808.npz",
+        input_file=input_file,
+        output_file=converted_file,
     )
 
-    # Create market snapshot
+    # Create market snapshot using the converted file
     create_market_snapshot(
-        input_files=["usdm/btcusdt_20240808.npz"],
+        input_files=[converted_file],  # Use the file we just converted
         tick_size=0.1,
         lot_size=0.001,
-        output_snapshot_file="usdm/btcusdt_20240808_eod.npz",
+        output_snapshot_file=f"{converted_file}_eod.npz",
     )
 
